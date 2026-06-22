@@ -26,7 +26,7 @@ load_dotenv()
 
 async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_callback):
     transport = SmallWebRTCTransport(
-        connection=connection,
+        webrtc_connection=connection,
         params=TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
