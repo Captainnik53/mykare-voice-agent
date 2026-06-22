@@ -46,6 +46,7 @@ class UserTranscriptRelay(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)  # must explicitly pass all frames
         if isinstance(frame, TranscriptionFrame) and frame.text.strip():
             try:
                 await self._cb({
@@ -67,6 +68,7 @@ class BotTranscriptRelay(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)  # must explicitly pass all frames
         if isinstance(frame, LLMFullResponseStartFrame):
             self._buf = ""
             self._active = True
