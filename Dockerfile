@@ -12,7 +12,7 @@ WORKDIR /app
 
 # System libs required by aiortc (opus audio, SRTP)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libopus0 libsrtp2-1 libvpx7 \
+        libopus0 libsrtp2-1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Python dependencies first (layer-cached until requirements change)
