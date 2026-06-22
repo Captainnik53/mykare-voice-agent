@@ -168,15 +168,30 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
         ),
     )
 
+    _greeted = False
+
+    async def _send_greeting():
+        nonlocal _greeted
+        if not _greeted:
+            _greeted = True
+            logger.info(f"Sending greeting | session={session_id}")
+            await task.queue_frames([LLMContextFrame(context=context)])
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Client connected | session={session_id}")
-        await task.queue_frames([LLMContextFrame(context=context)])
+        await _send_greeting()
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info(f"Client disconnected | session={session_id}")
         await task.cancel()
+
+    # Race-condition fallback: if ICE completed before on_client_connected was
+    # registered (can happen in low-latency cloud environments), fire manually.
+    if connection.is_connected():
+        logger.info(f"Fast ICE: already connected before handler registered | session={session_id}")
+        await _send_greeting()
 
     runner = PipelineRunner()
     await runner.run(task)

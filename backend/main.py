@@ -31,21 +31,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure STUN/TURN so aiortc can discover its public IP behind cloud NAT.
-# Set TURN_URL / TURN_USERNAME / TURN_PASSWORD env vars for relay support.
-_ice_servers: list[IceServer] = []
-_stun = os.getenv("STUN_URL", "stun:stun.l.google.com:19302")
-if _stun:
-    _ice_servers.append(IceServer(urls=_stun))
-_turn_url = os.getenv("TURN_URL")
-if _turn_url:
-    _ice_servers.append(IceServer(
-        urls=_turn_url,
-        username=os.getenv("TURN_USERNAME", ""),
-        credential=os.getenv("TURN_PASSWORD", ""),
-    ))
+# ICE server config — read once at startup, shared by backend (aiortc) and
+# the /api/ice-servers endpoint that the browser fetches before creating its
+# RTCPeerConnection.  Set TURN_* env vars on your host/platform.
+_STUN_URL  = os.getenv("STUN_URL",  "stun:stun.l.google.com:19302")
+_TURN_URL  = os.getenv("TURN_URL")            # e.g. turn:global.relay.metered.ca:80
+_TURN_USER = os.getenv("TURN_USERNAME", "")
+_TURN_PASS = os.getenv("TURN_PASSWORD", "")
 
-webrtc_handler = SmallWebRTCRequestHandler(ice_servers=_ice_servers or None)
+def _build_ice_server_list() -> list[IceServer]:
+    servers: list[IceServer] = []
+    if _STUN_URL:
+        servers.append(IceServer(urls=_STUN_URL))
+    if _TURN_URL:
+        urls = [_TURN_URL]
+        if "transport=" not in _TURN_URL:
+            urls.append(f"{_TURN_URL}?transport=tcp")
+        servers.append(IceServer(urls=urls, username=_TURN_USER, credential=_TURN_PASS))
+    return servers
+
+webrtc_handler = SmallWebRTCRequestHandler(ice_servers=_build_ice_server_list() or None)
 
 # session_id -> list of live WebSocket connections
 _ws_clients: dict[str, list[WebSocket]] = {}
@@ -120,6 +125,20 @@ async def get_summary(session_id: str):
     if data:
         return data
     return JSONResponse({"error": "Not found"}, status_code=404)
+
+
+@app.get("/api/ice-servers")
+async def ice_server_config():
+    """Browser fetches this to get the same ICE/TURN config the server uses."""
+    servers: list[dict] = []
+    if _STUN_URL:
+        servers.append({"urls": _STUN_URL})
+    if _TURN_URL:
+        urls = [_TURN_URL]
+        if "transport=" not in _TURN_URL:
+            urls.append(f"{_TURN_URL}?transport=tcp")
+        servers.append({"urls": urls, "username": _TURN_USER, "credential": _TURN_PASS})
+    return {"iceServers": servers}
 
 
 @app.get("/health")

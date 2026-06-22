@@ -109,9 +109,12 @@ export function useVoiceAgent() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
 
-      const pc = new RTCPeerConnection({
+      // Fetch ICE config from backend — includes TURN credentials for cloud NAT traversal
+      const iceCfg = await fetch(`${API_BASE}/api/ice-servers`).then(r => r.json()).catch(() => ({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-      })
+      }))
+
+      const pc = new RTCPeerConnection(iceCfg)
       pcRef.current = pc
 
       stream.getTracks().forEach(t => pc.addTrack(t, stream))
