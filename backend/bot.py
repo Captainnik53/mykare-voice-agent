@@ -9,7 +9,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
 from pipecat.processors.frameworks.rtvi import RTVIObserverParams
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.stt import OpenAISTTService
@@ -30,24 +30,22 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
         params=TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
         ),
     )
 
     stt = OpenAISTTService(
         api_key=os.getenv("OPENAI_API_KEY"),
-        model="whisper-1",
+        settings=OpenAISTTService.Settings(model="whisper-1"),
     )
 
     tts = OpenAITTSService(
         api_key=os.getenv("OPENAI_API_KEY"),
-        voice="nova",
-        model="tts-1",
+        settings=OpenAITTSService.Settings(voice="nova", model="tts-1"),
     )
 
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
-        model="claude-haiku-4-5-20251001",
+        settings=AnthropicLLMService.Settings(model="claude-haiku-4-5-20251001"),
     )
 
     # Register tool handlers
@@ -64,7 +62,12 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
         ],
         tools=get_tools_schema(),
     )
-    context_pair = LLMContextAggregatorPair(context)
+    context_pair = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(),
+        ),
+    )
 
     pipeline = Pipeline([
         transport.input(),
