@@ -17,7 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python dependencies first (layer-cached until requirements change)
 COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    # pipecat[webrtc] pulls in opencv-python which needs X11 display libs.
+    # Replace it with the headless build that has no GUI dependencies.
+    && pip install --no-cache-dir "opencv-python-headless>=4.0"
 
 # Backend source
 COPY backend/ ./
