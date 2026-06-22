@@ -129,10 +129,11 @@ export function useVoiceAgent() {
       }
 
       // Create a data channel BEFORE the offer so SCTP is included in the SDP.
-      // Without this the browser's offer has no SCTP m-line and pipecat can
-      // never open its RTVI channel → bot-speaking-state events never arrive.
-      pc.createDataChannel('_init')
-      // Pipecat's server-side RTVI channel arrives here once SCTP is up:
+      // Pipecat receives this channel via aiortc's ondatachannel and uses it
+      // to send RTVI events back — so we must listen on it, not discard it.
+      const rtviChannel = pc.createDataChannel('_init')
+      handleDataChannel(rtviChannel)
+      // Also handle any server-created channels (future-proofing):
       pc.ondatachannel = (evt) => handleDataChannel(evt.channel)
 
       const offer = await pc.createOffer()
