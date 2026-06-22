@@ -10,11 +10,15 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
 from pipecat.processors.frameworks.rtvi import RTVIObserverParams
 from pipecat.services.anthropic.llm import AnthropicLLMService
-from pipecat.services.openai.stt import OpenAISTTService
+from pipecat.services.groq.stt import GroqSTTService
 from pipecat.services.openai.tts import OpenAITTSService
+from pipecat.services.tts_service import TextAggregationMode
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -34,13 +38,16 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
         ),
     )
 
-    stt = OpenAISTTService(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        settings=OpenAISTTService.Settings(model="whisper-1"),
+    # Groq Whisper: ~200ms transcription vs ~2s for OpenAI Whisper
+    stt = GroqSTTService(
+        api_key=os.getenv("GROQ_OPENAI_API_KEY"),
+        model="whisper-large-v3-turbo",
     )
 
+    # TOKEN mode: send text to TTS as soon as LLM emits it — no waiting for sentence end
     tts = OpenAITTSService(
         api_key=os.getenv("OPENAI_API_KEY"),
+        text_aggregation_mode=TextAggregationMode.SENTENCE,
         settings=OpenAITTSService.Settings(voice="nova", model="tts-1"),
     )
 
@@ -49,16 +56,13 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
         settings=AnthropicLLMService.Settings(model="claude-haiku-4-5-20251001"),
     )
 
-    # Register tool handlers
     appointment_tools = AppointmentTools(session_id, event_callback)
     for name, handler in appointment_tools.handlers().items():
         llm.register_function(name, handler)
 
-    # Build context with tools — pipecat 1.1.0 uses ToolsSchema directly
     context = LLMContext(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            # Seed a user turn so Claude generates an opening greeting immediately
             {"role": "user", "content": "[call_started]"},
         ],
         tools=get_tools_schema(),
@@ -68,14 +72,14 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
         user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(
                 params=VADParams(
-                    stop_secs=0.8,     # wait 800ms of silence before ending speech
+                    stop_secs=0.8,
                     start_secs=0.2,
                     confidence=0.7,
-                    min_volume=0.4,    # lower threshold for quieter mics
+                    min_volume=0.4,
                 )
             ),
-            user_turn_stop_timeout=3.0,   # wait 3s after VAD stops before finalising turn
-            audio_idle_timeout=5.0,       # wait 5s of no audio frames before forcing stop
+            user_turn_stop_timeout=3.0,
+            audio_idle_timeout=5.0,
         ),
     )
 
@@ -105,7 +109,6 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Client connected | session={session_id}")
-        # Trigger Claude to generate the opening greeting
         await task.queue_frames([LLMContextFrame(context=context)])
 
     @transport.event_handler("on_client_disconnected")

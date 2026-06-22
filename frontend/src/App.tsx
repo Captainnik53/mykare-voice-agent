@@ -55,14 +55,7 @@ export default function App() {
         )}
 
         {/* Tool status panel */}
-        {isConnected && toolEvents.length > 0 && (
-          <div style={{ width: '100%' }}>
-            <p style={{ fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
-              Agent Actions
-            </p>
-            <ToolStatus events={toolEvents} />
-          </div>
-        )}
+        {isConnected && <ToolStatus events={toolEvents} />}
 
         {/* CTA / status */}
         {(isIdle || error) && (
