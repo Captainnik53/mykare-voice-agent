@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import LLMContextFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -65,7 +66,16 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
     context_pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(),
+            vad_analyzer=SileroVADAnalyzer(
+                params=VADParams(
+                    stop_secs=0.8,     # wait 800ms of silence before ending speech
+                    start_secs=0.2,
+                    confidence=0.7,
+                    min_volume=0.4,    # lower threshold for quieter mics
+                )
+            ),
+            user_turn_stop_timeout=3.0,   # wait 3s after VAD stops before finalising turn
+            audio_idle_timeout=5.0,       # wait 5s of no audio frames before forcing stop
         ),
     )
 
