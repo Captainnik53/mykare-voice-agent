@@ -4,14 +4,12 @@ import { ToolStatus } from './components/ToolStatus'
 import { useVoiceAgent } from './hooks/useVoiceAgent'
 
 export default function App() {
-  const { callState, botState, toolEvents, callSummary, startCall, endCall } = useVoiceAgent()
+  const { callState, botState, toolEvents, callSummary, error, startCall, endCall, reset } = useVoiceAgent()
 
-  const isIdle = callState === 'idle'
+  const isIdle       = callState === 'idle'
   const isConnecting = callState === 'connecting'
-  const isConnected = callState === 'connected'
-  const isEnded = callState === 'ended'
-
-  const handleReset = () => window.location.reload()
+  const isConnected  = callState === 'connected'
+  const isEnded      = callState === 'ended'
 
   return (
     <div style={{
@@ -23,7 +21,6 @@ export default function App() {
       padding: 24,
       background: 'linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 50%, #ede9fe 100%)',
     }}>
-      {/* Card */}
       <div style={{
         background: 'white',
         borderRadius: 24,
@@ -46,6 +43,17 @@ export default function App() {
         {/* Avatar */}
         <Avatar botState={isConnected ? botState : 'idle'} />
 
+        {/* Error banner */}
+        {error && (
+          <div style={{
+            width: '100%', padding: '12px 14px', borderRadius: 10,
+            background: '#fef2f2', border: '1px solid #fecaca',
+            color: '#dc2626', fontSize: 13, lineHeight: 1.5,
+          }}>
+            ⚠️ {error}
+          </div>
+        )}
+
         {/* Tool status panel */}
         {isConnected && toolEvents.length > 0 && (
           <div style={{ width: '100%' }}>
@@ -57,13 +65,16 @@ export default function App() {
         )}
 
         {/* CTA / status */}
-        {isIdle && (
+        {(isIdle || error) && (
           <div style={{ width: '100%', textAlign: 'center' }}>
-            <p style={{ fontSize: 14, color: '#64748b', marginBottom: 18 }}>
-              Book, modify, or cancel your appointments with Priya — our AI assistant.
-            </p>
+            {!error && (
+              <p style={{ fontSize: 14, color: '#64748b', marginBottom: 18 }}>
+                Book, modify, or cancel your appointments with Priya — our AI assistant.
+              </p>
+            )}
             <button
-              onClick={startCall}
+              type="button"
+              onClick={error ? reset : startCall}
               style={{
                 width: '100%', padding: '14px 0',
                 background: '#3b82f6', color: 'white',
@@ -71,10 +82,9 @@ export default function App() {
                 fontSize: 16, fontWeight: 700,
                 cursor: 'pointer',
                 boxShadow: '0 4px 12px rgba(59,130,246,0.4)',
-                transition: 'transform 0.1s',
               }}
             >
-              📞 Start Call
+              {error ? '↩ Try Again' : '📞 Start Call'}
             </button>
           </div>
         )}
@@ -92,6 +102,7 @@ export default function App() {
               Speak naturally — Priya is listening
             </p>
             <button
+              type="button"
               onClick={endCall}
               style={{
                 width: '100%', padding: '12px 0',
@@ -109,7 +120,8 @@ export default function App() {
           <div style={{ textAlign: 'center' }}>
             <p style={{ color: '#64748b', marginBottom: 16 }}>Call ended.</p>
             <button
-              onClick={handleReset}
+              type="button"
+              onClick={reset}
               style={{
                 padding: '12px 28px', background: '#3b82f6', color: 'white',
                 border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 600, cursor: 'pointer',
@@ -120,18 +132,13 @@ export default function App() {
           </div>
         )}
 
-        {/* Session info */}
         {isConnected && (
           <p style={{ fontSize: 11, color: '#cbd5e1' }}>Powered by Claude + Pipecat</p>
         )}
       </div>
 
-      {/* Call summary modal */}
       {callSummary && (
-        <CallSummary
-          data={callSummary}
-          onClose={handleReset}
-        />
+        <CallSummary data={callSummary} onClose={reset} />
       )}
     </div>
   )
