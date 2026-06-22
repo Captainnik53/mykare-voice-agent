@@ -104,7 +104,7 @@ export function Avatar({ botState }: Props) {
         textTransform: 'uppercase',
         transition: 'color 0.3s',
       }}>
-        {isSpeaking ? 'Speaking...' : isThinking ? 'Thinking...' : isListening ? 'Listening' : 'Idle'}
+        {isSpeaking ? 'Speaking...' : isThinking ? 'Responding...' : isListening ? 'Listening' : 'Idle'}
       </div>
 
       <style>{`

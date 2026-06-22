@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AgentEvent, BotState, CallEndedEvent, CallState, ToolEvent } from '../types'
+import {
+  AgentEvent,
+  BotState,
+  CallEndedEvent,
+  CallState,
+  ToolEvent,
+  TranscriptEvent,
+  TranscriptMessage,
+} from '../types'
 
 const API_BASE = import.meta.env.VITE_API_URL || ''
 
@@ -7,13 +15,17 @@ export function useVoiceAgent() {
   const [callState, setCallState] = useState<CallState>('idle')
   const [botState, setBotState] = useState<BotState>('idle')
   const [toolEvents, setToolEvents] = useState<ToolEvent[]>([])
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([])
   const [callSummary, setCallSummary] = useState<CallEndedEvent['data'] | null>(null)
+  const [callerName, setCallerName] = useState<string | null>(null)
+  const [callDuration, setCallDuration] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
 
   const pcRef = useRef<RTCPeerConnection | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const callStartRef = useRef<number | null>(null)
 
   // ------------------------------------------------------------------
   // WebSocket — events sidecar
@@ -30,8 +42,24 @@ export function useVoiceAgent() {
     ws.onmessage = (msg) => {
       try {
         const event: AgentEvent = JSON.parse(msg.data)
+
         if (event.type === 'tool_called' || event.type === 'tool_result') {
-          setToolEvents(prev => [event as ToolEvent, ...prev].slice(0, 10))
+          const te = event as ToolEvent
+          setToolEvents(prev => [te, ...prev].slice(0, 10))
+          // Extract caller name from identify_user result
+          if (te.type === 'tool_result' && te.data.tool === 'identify_user' && te.data.name) {
+            setCallerName(te.data.name as string)
+          }
+        } else if (event.type === 'user_transcript') {
+          const te = event as TranscriptEvent
+          if (te.data.text.trim()) {
+            setTranscript(prev => [...prev, { role: 'user', text: te.data.text.trim(), ts: Date.now() }])
+          }
+        } else if (event.type === 'bot_transcript') {
+          const te = event as TranscriptEvent
+          if (te.data.text.trim()) {
+            setTranscript(prev => [...prev, { role: 'agent', text: te.data.text.trim(), ts: Date.now() }])
+          }
         } else if (event.type === 'call_ended') {
           setCallSummary((event as CallEndedEvent).data)
           setCallState('ended')
@@ -53,10 +81,10 @@ export function useVoiceAgent() {
         const msg = JSON.parse(evt.data as string)
         if (msg.label !== 'rtvi-ai') return
         switch (msg.type) {
-          case 'bot-tts-started':   setBotState('speaking');  break
-          case 'bot-tts-stopped':   setBotState('listening'); break
-          case 'bot-llm-started':   setBotState('thinking');  break
-          case 'bot-llm-stopped':   setBotState('listening'); break
+          case 'bot-tts-started':       setBotState('speaking');  break
+          case 'bot-tts-stopped':       setBotState('listening'); break
+          case 'bot-llm-started':       setBotState('thinking');  break
+          case 'bot-llm-stopped':       setBotState('listening'); break
           case 'user-started-speaking': setBotState('listening'); break
         }
       } catch { /* ignore */ }
@@ -70,16 +98,17 @@ export function useVoiceAgent() {
     setError(null)
     setCallState('connecting')
     setToolEvents([])
+    setTranscript([])
     setCallSummary(null)
+    setCallerName(null)
+    setCallDuration(null)
 
     const sid = crypto.randomUUID()
     setSessionId(sid)
 
     try {
-      // 1. Request microphone
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
 
-      // 2. Create peer connection
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
       })
@@ -87,7 +116,6 @@ export function useVoiceAgent() {
 
       stream.getTracks().forEach(t => pc.addTrack(t, stream))
 
-      // Remote audio → speaker
       pc.ontrack = (evt) => {
         if (!audioRef.current) {
           audioRef.current = document.createElement('audio')
@@ -97,25 +125,21 @@ export function useVoiceAgent() {
         audioRef.current.srcObject = evt.streams[0]
       }
 
-      // RTVI data channel from server
       pc.ondatachannel = (evt) => handleDataChannel(evt.channel)
 
-      // 3. Create offer + set local description
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
 
-      // 4. Wait for ICE gathering (vanilla ICE — include candidates in SDP)
       await new Promise<void>((resolve) => {
         if (pc.iceGatheringState === 'complete') { resolve(); return }
         const check = () => { if (pc.iceGatheringState === 'complete') resolve() }
         pc.addEventListener('icegatheringstatechange', check)
-        setTimeout(resolve, 4000) // fallback
+        setTimeout(resolve, 4000)
       })
 
       const localDesc = pc.localDescription
       if (!localDesc) throw new Error('No local description after ICE gathering')
 
-      // 5. Send SDP offer to backend
       const resp = await fetch(`${API_BASE}/api/offer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -135,12 +159,11 @@ export function useVoiceAgent() {
       const returnedSid: string = answer.session_id || sid
       setSessionId(returnedSid)
 
-      // 6. Set remote description from server answer
       await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type })
 
-      // 7. Connect WebSocket for tool events
       connectWS(returnedSid)
 
+      callStartRef.current = Date.now()
       setCallState('connected')
       setBotState('thinking')
     } catch (err: unknown) {
@@ -159,6 +182,10 @@ export function useVoiceAgent() {
   // End call
   // ------------------------------------------------------------------
   const endCall = useCallback(() => {
+    if (callStartRef.current) {
+      setCallDuration(Math.round((Date.now() - callStartRef.current) / 1000))
+      callStartRef.current = null
+    }
     pcRef.current?.close()
     wsRef.current?.close()
     if (audioRef.current) {
@@ -177,10 +204,17 @@ export function useVoiceAgent() {
     setError(null)
     setCallState('idle')
     setToolEvents([])
+    setTranscript([])
     setCallSummary(null)
+    setCallerName(null)
+    setCallDuration(null)
   }, [endCall])
 
   useEffect(() => () => { endCall() }, [endCall])
 
-  return { callState, botState, toolEvents, callSummary, error, sessionId, startCall, endCall, reset }
+  return {
+    callState, botState, toolEvents, transcript, callSummary,
+    callerName, callDuration, error, sessionId,
+    startCall, endCall, reset,
+  }
 }

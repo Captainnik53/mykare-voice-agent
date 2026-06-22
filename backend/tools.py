@@ -143,6 +143,8 @@ class AppointmentTools:
             "tool": "identify_user",
             "status": "User identified ✓",
             "returning": result["returning_patient"],
+            "name": name or "Patient",
+            "phone": phone,
         })
         await params.result_callback(json.dumps(result))
 

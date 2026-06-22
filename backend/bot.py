@@ -1,11 +1,19 @@
 import os
+from datetime import datetime
 
 from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import LLMContextFrame
+from pipecat.frames.frames import (
+    Frame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMContextFrame,
+    TextFrame,
+    TranscriptionFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -14,6 +22,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.frameworks.rtvi import RTVIObserverParams
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.groq.stt import GroqSTTService
@@ -29,6 +38,54 @@ from tools import AppointmentTools, get_tools_schema
 load_dotenv()
 
 
+class UserTranscriptRelay(FrameProcessor):
+    """Forwards user speech transcriptions to the WebSocket sidecar."""
+    def __init__(self, event_cb):
+        super().__init__()
+        self._cb = event_cb
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TranscriptionFrame) and frame.text.strip():
+            try:
+                await self._cb({
+                    "type": "user_transcript",
+                    "data": {"text": frame.text.strip()},
+                    "ts": datetime.now().isoformat(),
+                })
+            except Exception:
+                pass
+
+
+class BotTranscriptRelay(FrameProcessor):
+    """Accumulates LLM output and sends complete bot turns to the WebSocket sidecar."""
+    def __init__(self, event_cb):
+        super().__init__()
+        self._cb = event_cb
+        self._buf = ""
+        self._active = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self._buf = ""
+            self._active = True
+        elif self._active and isinstance(frame, TextFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._buf += frame.text
+        elif isinstance(frame, LLMFullResponseEndFrame) and self._active:
+            self._active = False
+            if self._buf.strip():
+                try:
+                    await self._cb({
+                        "type": "bot_transcript",
+                        "data": {"text": self._buf.strip()},
+                        "ts": datetime.now().isoformat(),
+                    })
+                except Exception:
+                    pass
+                self._buf = ""
+
+
 async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_callback):
     transport = SmallWebRTCTransport(
         webrtc_connection=connection,
@@ -38,13 +95,11 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
         ),
     )
 
-    # Groq Whisper: ~200ms transcription vs ~2s for OpenAI Whisper
     stt = GroqSTTService(
         api_key=os.getenv("GROQ_OPENAI_API_KEY"),
         model="whisper-large-v3-turbo",
     )
 
-    # TOKEN mode: send text to TTS as soon as LLM emits it — no waiting for sentence end
     tts = OpenAITTSService(
         api_key=os.getenv("OPENAI_API_KEY"),
         text_aggregation_mode=TextAggregationMode.SENTENCE,
@@ -83,11 +138,16 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
         ),
     )
 
+    user_transcript_relay = UserTranscriptRelay(event_callback)
+    bot_transcript_relay = BotTranscriptRelay(event_callback)
+
     pipeline = Pipeline([
         transport.input(),
         stt,
+        user_transcript_relay,
         context_pair.user(),
         llm,
+        bot_transcript_relay,
         tts,
         transport.output(),
         context_pair.assistant(),
