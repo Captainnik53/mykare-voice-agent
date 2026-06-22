@@ -2,13 +2,11 @@ import json
 from datetime import datetime, timedelta
 
 from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.services.llm_service import FunctionCallParams
 
 import database as db
 
-
-# ---------------------------------------------------------------------------
-# Slot generation (hardcoded for demo)
-# ---------------------------------------------------------------------------
 
 SLOT_TIMES = ["09:00 AM", "10:30 AM", "12:00 PM", "01:30 PM", "03:00 PM", "04:30 PM"]
 DOCTORS = ["Dr. Sharma", "Dr. Patel", "Dr. Nair"]
@@ -34,13 +32,13 @@ def _available_slots(date_filter: str | None = None) -> list[dict]:
 # Tool schemas
 # ---------------------------------------------------------------------------
 
-SCHEMAS = [
+_SCHEMAS = [
     FunctionSchema(
         name="identify_user",
         description="Identify the caller by their phone number. Call this as soon as the user provides their phone number.",
         properties={
             "phone": {"type": "string", "description": "Caller's phone number, e.g. '9876543210'"},
-            "name": {"type": "string", "description": "Caller's name if already provided"},
+            "name": {"type": "string", "description": "Caller's name if already mentioned"},
         },
         required=["phone"],
     ),
@@ -59,7 +57,7 @@ SCHEMAS = [
             "phone": {"type": "string", "description": "Patient phone number"},
             "name": {"type": "string", "description": "Patient full name"},
             "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
-            "time_slot": {"type": "string", "description": "Time slot, e.g. '10:30 AM'"},
+            "time_slot": {"type": "string", "description": "Time slot e.g. '10:30 AM'"},
             "doctor": {"type": "string", "description": "Doctor name, default Dr. Sharma"},
         },
         required=["phone", "name", "date", "time_slot"],
@@ -88,7 +86,7 @@ SCHEMAS = [
             "appointment_id": {"type": "integer", "description": "Appointment ID to modify"},
             "phone": {"type": "string", "description": "Patient phone number for verification"},
             "new_date": {"type": "string", "description": "New date in YYYY-MM-DD format"},
-            "new_time": {"type": "string", "description": "New time slot, e.g. '02:00 PM'"},
+            "new_time": {"type": "string", "description": "New time slot e.g. '02:00 PM'"},
         },
         required=["appointment_id", "phone", "new_date", "new_time"],
     ),
@@ -103,12 +101,12 @@ SCHEMAS = [
 ]
 
 
-def get_tool_schemas() -> list[dict]:
-    return [s.to_default_dict() for s in SCHEMAS]
+def get_tools_schema() -> ToolsSchema:
+    return ToolsSchema(standard_tools=_SCHEMAS)
 
 
 # ---------------------------------------------------------------------------
-# Tool handlers
+# Tool handlers  (pipecat 1.1.0: single FunctionCallParams argument)
 # ---------------------------------------------------------------------------
 
 class AppointmentTools:
@@ -125,9 +123,9 @@ class AppointmentTools:
             pass
 
     # ------------------------------------------------------------------
-    async def identify_user(self, function_name, tool_call_id, args, llm, context, result_callback):
-        phone = args.get("phone", "")
-        name = args.get("name", "")
+    async def identify_user(self, params: FunctionCallParams):
+        phone = params.arguments.get("phone", "")
+        name = params.arguments.get("name", "")
         self.phone = phone
         if name:
             self.name = name
@@ -141,12 +139,16 @@ class AppointmentTools:
             "returning_patient": len(apts) > 0,
             "existing_appointments": len(apts),
         }
-        await self._pub("tool_result", {"tool": "identify_user", "status": "User identified ✓", "returning": result["returning_patient"]})
-        await result_callback(json.dumps(result))
+        await self._pub("tool_result", {
+            "tool": "identify_user",
+            "status": "User identified ✓",
+            "returning": result["returning_patient"],
+        })
+        await params.result_callback(json.dumps(result))
 
     # ------------------------------------------------------------------
-    async def fetch_slots(self, function_name, tool_call_id, args, llm, context, result_callback):
-        date = args.get("date")
+    async def fetch_slots(self, params: FunctionCallParams):
+        date = params.arguments.get("date")
         await self._pub("tool_called", {"tool": "fetch_slots", "status": "Fetching available slots..."})
         slots = _available_slots(date)
 
@@ -156,10 +158,11 @@ class AppointmentTools:
 
         result = {"available_slots": grouped, "doctors": DOCTORS, "total": len(slots)}
         await self._pub("tool_result", {"tool": "fetch_slots", "status": f"Found {len(slots)} slots ✓"})
-        await result_callback(json.dumps(result))
+        await params.result_callback(json.dumps(result))
 
     # ------------------------------------------------------------------
-    async def book_appointment(self, function_name, tool_call_id, args, llm, context, result_callback):
+    async def book_appointment(self, params: FunctionCallParams):
+        args = params.arguments
         phone = args.get("phone") or self.phone or ""
         name = args.get("name") or self.name or "Patient"
         date = args.get("date", "")
@@ -175,30 +178,37 @@ class AppointmentTools:
                 "date": date, "time": time_slot, "doctor": doctor,
             })
         else:
-            await self._pub("tool_result", {"tool": "book_appointment", "status": f"Booking failed ❌ — {result.get('error')}"})
-
-        await result_callback(json.dumps(result))
+            await self._pub("tool_result", {
+                "tool": "book_appointment",
+                "status": f"Booking failed ❌ — {result.get('error')}",
+            })
+        await params.result_callback(json.dumps(result))
 
     # ------------------------------------------------------------------
-    async def retrieve_appointments(self, function_name, tool_call_id, args, llm, context, result_callback):
-        phone = args.get("phone") or self.phone or ""
+    async def retrieve_appointments(self, params: FunctionCallParams):
+        phone = params.arguments.get("phone") or self.phone or ""
         await self._pub("tool_called", {"tool": "retrieve_appointments", "status": "Fetching appointments..."})
         apts = db.get_appointments(phone)
-        await self._pub("tool_result", {"tool": "retrieve_appointments", "status": f"Found {len(apts)} appointment(s) ✓"})
-        await result_callback(json.dumps({"appointments": apts}))
+        await self._pub("tool_result", {
+            "tool": "retrieve_appointments",
+            "status": f"Found {len(apts)} appointment(s) ✓",
+        })
+        await params.result_callback(json.dumps({"appointments": apts}))
 
     # ------------------------------------------------------------------
-    async def cancel_appointment(self, function_name, tool_call_id, args, llm, context, result_callback):
+    async def cancel_appointment(self, params: FunctionCallParams):
+        args = params.arguments
         apt_id = args.get("appointment_id")
         phone = args.get("phone") or self.phone or ""
         await self._pub("tool_called", {"tool": "cancel_appointment", "status": f"Cancelling appointment #{apt_id}..."})
         result = db.cancel_appointment(apt_id, phone)
         status = "Appointment cancelled ✅" if result["success"] else f"Cancellation failed ❌ — {result.get('error')}"
         await self._pub("tool_result", {"tool": "cancel_appointment", "status": status})
-        await result_callback(json.dumps(result))
+        await params.result_callback(json.dumps(result))
 
     # ------------------------------------------------------------------
-    async def modify_appointment(self, function_name, tool_call_id, args, llm, context, result_callback):
+    async def modify_appointment(self, params: FunctionCallParams):
+        args = params.arguments
         apt_id = args.get("appointment_id")
         phone = args.get("phone") or self.phone or ""
         new_date = args.get("new_date", "")
@@ -207,41 +217,41 @@ class AppointmentTools:
         result = db.modify_appointment(apt_id, phone, new_date, new_time)
         status = "Appointment rescheduled ✅" if result["success"] else f"Reschedule failed ❌ — {result.get('error')}"
         await self._pub("tool_result", {"tool": "modify_appointment", "status": status})
-        await result_callback(json.dumps(result))
+        await params.result_callback(json.dumps(result))
 
     # ------------------------------------------------------------------
-    async def end_conversation(self, function_name, tool_call_id, args, llm, context, result_callback):
-        preferences = args.get("preferences", "")
+    async def end_conversation(self, params: FunctionCallParams):
+        preferences = params.arguments.get("preferences", "")
         phone = self.phone or ""
+
         await self._pub("tool_called", {"tool": "end_conversation", "status": "Generating call summary..."})
 
         apts = db.get_appointments(phone) if phone else []
 
-        summary_parts = []
+        parts = []
         if self.name or phone:
-            summary_parts.append(f"Patient: {self.name or 'Unknown'} | Phone: {phone or 'Not provided'}")
+            parts.append(f"Patient: {self.name or 'Unknown'} | Phone: {phone or 'Not provided'}")
         if apts:
-            apt_lines = [f"• {a['date']} at {a['time_slot']} with {a.get('doctor', 'Dr. Sharma')}" for a in apts]
-            summary_parts.append("Appointments:\n" + "\n".join(apt_lines))
+            lines = [f"• {a['date']} at {a['time_slot']} with {a.get('doctor', 'Dr. Sharma')}" for a in apts]
+            parts.append("Appointments:\n" + "\n".join(lines))
         else:
-            summary_parts.append("No appointments on record.")
+            parts.append("No appointments on record.")
         if preferences:
-            summary_parts.append(f"Patient notes: {preferences}")
+            parts.append(f"Patient notes: {preferences}")
 
-        summary = "\n\n".join(summary_parts)
+        summary = "\n\n".join(parts)
         if phone:
             db.save_summary(self.session_id, phone, summary, apts, preferences)
 
         await self._pub("call_ended", {
             "summary": summary,
             "phone": phone,
-            "name": self.name,
+            "name": self.name or "",
             "appointments": apts,
             "preferences": preferences,
             "timestamp": datetime.now().isoformat(),
         })
-
-        await result_callback(json.dumps({"success": True, "message": "Thank you, goodbye!"}))
+        await params.result_callback(json.dumps({"success": True, "message": "Goodbye!"}))
 
     # ------------------------------------------------------------------
     def handlers(self) -> dict:

@@ -4,13 +4,12 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.frames.frames import LLMContextFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import (
-    OpenAILLMContext,
-    OpenAILLMContextFrame,
-)
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.frameworks.rtvi import RTVIObserverParams
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.stt import OpenAISTTService
@@ -20,7 +19,7 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
 from prompt import SYSTEM_PROMPT
-from tools import AppointmentTools, get_tool_schemas
+from tools import AppointmentTools, get_tools_schema
 
 load_dotenv()
 
@@ -51,28 +50,30 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
         model="claude-haiku-4-5-20251001",
     )
 
+    # Register tool handlers
     appointment_tools = AppointmentTools(session_id, event_callback)
     for name, handler in appointment_tools.handlers().items():
         llm.register_function(name, handler)
 
-    context = OpenAILLMContext(
+    # Build context with tools — pipecat 1.1.0 uses ToolsSchema directly
+    context = LLMContext(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            # Trigger the bot to greet immediately when the call starts
+            # Seed a user turn so Claude generates an opening greeting immediately
             {"role": "user", "content": "[call_started]"},
         ],
-        tools=get_tool_schemas(),
+        tools=get_tools_schema(),
     )
-    context_aggregator = llm.create_context_aggregator(context)
+    context_pair = LLMContextAggregatorPair(context)
 
     pipeline = Pipeline([
         transport.input(),
         stt,
-        context_aggregator.user(),
+        context_pair.user(),
         llm,
         tts,
         transport.output(),
-        context_aggregator.assistant(),
+        context_pair.assistant(),
     ])
 
     task = PipelineTask(
@@ -91,8 +92,8 @@ async def run_bot(connection: SmallWebRTCConnection, session_id: str, event_call
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Client connected | session={session_id}")
-        # Queue the initial context so Claude generates the opening greeting
-        await task.queue_frames([OpenAILLMContextFrame(context=context)])
+        # Trigger Claude to generate the opening greeting
+        await task.queue_frames([LLMContextFrame(context=context)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
